@@ -1,0 +1,49 @@
+#!/bin/bash
+
+#this is a sample script that assumes all files are in the same directory that the script is running in and everything is local to the Big-IP LTM.  Adjust this to suit your organization's irule management/deployment infrastructure
+#first arg: irule name
+#second arg: name of the file containing the irule you wish to update
+IRULE=$1
+IRULE_FILE=$2
+BACKOUT_FILE=$1.bak
+
+tmsh list ltm rule $IRULE > $BACKOUT_FILE
+
+tmsh load /sys config merge file $IRULE_FILE verify
+if [[ $? == 0 ]]; then
+    echo "iRule verification complete"
+else
+    echo "iRule verification failed!  Investigate."
+    exit 1
+fi
+
+tmsh load /sys config merge file $BACKOUT_FILE verify
+if [[ $? == 0 ]]; then
+    echo "iRule backout verification complete"
+else
+    echo "iRule backout verification failed!  Investigate."
+    exit 1
+fi
+echo "backout verification complete"
+
+echo "The following vips will be impacted:"
+tmsh list ltm virtual one-line | grep $IRULE | awk '{print $3}'
+read -p "Do you wish to proceed with the update? (Y/N)" cont
+
+if [[ ${cont^^} == Y* ]]; then
+    PRE_TCL=`grep TCL /var/log/ltm | wc -l`
+    tmsh load /sys config merge file $IRULE_FILE
+    echo "irule merge complete.  Will continue to monitor for one minute"
+    for i in {0..59}; do
+        POST_TCL=`grep TCL /var/log/ltm | wc -l`
+        if (( $POST_TCL > $PRE_TCL )); then
+            echo "TCL spike!  $POST_TCL errors when previously there were only $PRE_TCL.  Backing out change."
+            tmsh load /sys conifg merge file $BACKOUT_FILE
+            exit 1
+        fi
+        sleep 1
+    done
+fi
+
+echo "all done here!"
+exit 0
